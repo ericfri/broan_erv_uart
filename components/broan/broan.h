@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include "esphome.h"
 #include "esphome/core/component.h"
 
