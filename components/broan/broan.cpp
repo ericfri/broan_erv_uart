@@ -1,7 +1,7 @@
 #include "broan.h"
 
 namespace esphome {
-namespace broan { // Change 'broan' to match your component name
+namespace broan {
 
 
 void BroanComponent::setup()
@@ -17,6 +17,14 @@ void BroanComponent::setup()
 
   	if(flow_control_pin_)
     	this->flow_control_pin_->setup();
+
+	// Initial state
+#ifdef USE_TEXT_SENSOR
+	if( warning_code_text_sensor_ )
+		warning_code_text_sensor_->publish_state("OK");
+	if( fault_code_text_sensor_ )
+		fault_code_text_sensor_->publish_state("OK");
+#endif
 }
 
 
@@ -38,7 +46,11 @@ void BroanComponent::dump_config()
 {
 	ESP_LOGCONFIG("broan", "Broan:");
 	if(flow_control_pin_)
-		ESP_LOGCONFIG("broan", "Flow Control Pin: %s", this->flow_control_pin_->dump_summary().c_str());
+	{
+		char buffer[255];
+		this->flow_control_pin_->dump_summary( buffer, 255 );
+		ESP_LOGCONFIG("broan", "Flow Control Pin: %s", buffer );
+	}
 }
 
 float BroanComponent::get_setup_priority() const
@@ -311,10 +323,13 @@ void BroanComponent::parseBroanFields(const std::vector<uint8_t>& message)
     size_t i = 1;
 	bool bPublish = false;
 
+	std::string strBuf;
+
     while (i < message.size())
     {
         uint8_t nOpcodeHigh = message[i++];
         uint8_t nOpcodeLow  = message[i++];
+		uint16_t nOpcode = ( nOpcodeHigh << 8 ) | nOpcodeLow;
 		size_t len = message[i++];
 		uint32_t nDataPos = i;
 
@@ -331,13 +346,21 @@ void BroanComponent::parseBroanFields(const std::vector<uint8_t>& message)
 			continue;
 		}
 
-		uint32_t oldVal = pField->m_value.m_nValue;
-		for (size_t b = 0; b < len; ++b)
-			pField->m_value.m_rgBytes[b] = static_cast<char>(message[nDataPos+b]);
-	
-		if( oldVal == pField->m_value.m_nValue )
-			continue;
+		switch( pField->m_nType )
+		{
+			case BroanFieldType::String: 
+				strBuf.assign( reinterpret_cast<const char*>(message.data() + nDataPos), len );
+			break;
+			default: 
+				uint32_t oldVal = pField->m_value.m_nValue;
+				for (size_t b = 0; b < len; ++b)
+					pField->m_value.m_rgBytes[b] = static_cast<char>(message[nDataPos+b]);
+			
+				if( oldVal == pField->m_value.m_nValue )
+					continue;
+		}
 
+		
 		switch(unField)
 		{
 #ifdef USE_SELECT
@@ -349,13 +372,15 @@ void BroanComponent::parseBroanFields(const std::vector<uint8_t>& message)
 				std::string strMode;
 				switch( pField->m_value.m_chValue )
 				{
-					case 0x02: strMode = "ovr"; break;
-					case 0x08: strMode = "int"; break;
-					case 0x09: strMode = "min"; break;
-					case 0x0a: strMode = "max"; break;
-					case 0x0b: strMode = "manual"; break;
-					case 0x0c: strMode = "turbo"; break;
-					case 0x0d: strMode = "humidity"; break;
+					case BroanFanMode::Ovr: strMode = "ovr"; break;
+					case BroanFanMode::Intermittent: strMode = "int"; break;
+					case BroanFanMode::Min: strMode = "min"; break;
+					case BroanFanMode::Max: strMode = "max"; break;
+					case BroanFanMode::Manual: strMode = "manual"; break;
+					case BroanFanMode::Turbo: strMode = "turbo"; break;
+					case BroanFanMode::Humidity: strMode = "humidity"; break;
+					case BroanFanMode::Recirculate: strMode = "recirculate"; break;
+					case BroanFanMode::Smart: strMode = "smart"; break;
 
 					default: strMode = "off"; break;
 				}
@@ -460,9 +485,98 @@ void BroanComponent::parseBroanFields(const std::vector<uint8_t>& message)
 				
 				humidity_control_switch_->publish_state(pField->m_value.m_chValue==1);
 			break;
-	#endif
-		}
+#endif
+#ifdef USE_TEXT_SENSOR
+			case BroanField::Firmware: 
+				if( !firmware_text_sensor_ )
+						continue;
+				
+				firmware_text_sensor_->publish_state(strBuf);
+			break;
+			case BroanField::FirmwareVersion: 
+			{
+				if( !firmware_version_text_sensor_ )
+						continue;
 
+				char buf[12];
+				snprintf( buf, sizeof(buf), "%u.%u.%u", strBuf[0], strBuf[1], strBuf[2] );
+				
+				firmware_version_text_sensor_->publish_state(buf);
+			}
+			break;
+			case BroanField::Model: 
+				if( !model_text_sensor_ )
+						continue;
+				
+				model_text_sensor_->publish_state(strBuf);
+			break;
+			case BroanField::HardwareRevision: 
+			{
+				if( !hardware_revision_text_sensor_ )
+						continue;
+				
+				char buf[12];
+				snprintf( buf, sizeof(buf), "%u.%u.%u", strBuf[0], strBuf[1], strBuf[2] );
+
+				hardware_revision_text_sensor_->publish_state(buf);
+			}
+			break;
+
+			case BroanField::WarningCode: 
+			{
+				if( !warning_code_text_sensor_ )
+						continue;
+
+				if( pField->m_value.m_nValue == -1 )
+				{
+					warning_code_text_sensor_->publish_state("OK");
+					break;
+				}
+				
+				char buf[6];
+				snprintf( buf, sizeof(buf), "W%u", pField->m_value.m_nValue );
+
+				warning_code_text_sensor_->publish_state(buf);
+			}
+			break;
+			case BroanField::FaultCode: 
+			{
+				if( !fault_code_text_sensor_ )
+						continue;
+
+				if( pField->m_value.m_nValue == -1 )
+				{
+					fault_code_text_sensor_->publish_state("OK");
+					break;
+				}
+				
+				char buf[6];
+				snprintf( buf, sizeof(buf), "E%u", pField->m_value.m_nValue );
+
+				fault_code_text_sensor_->publish_state(buf);
+			}
+			break;
+
+			case BroanField::BaseMode: 
+				if( !base_mode_text_sensor_ )
+						continue;
+
+				// @todo
+				char buf[30];
+				snprintf( buf, sizeof(buf), "%u", (unsigned)pField->m_value.m_nValue );
+				base_mode_text_sensor_->publish_state( buf );
+			break;
+
+
+			case BroanField::ActiveMode: 
+				if( !active_mode_text_sensor_ )
+						continue;
+						
+				active_mode_text_sensor_->publish_state(activeModeToString( pField->m_value.m_nValue ));
+			break;
+#endif
+		}
+		// This is no longer useful outside of development, ifdefing out.
 		switch( pField->m_nType )
 		{
 			case BroanFieldType::Byte:
@@ -477,9 +591,11 @@ void BroanComponent::parseBroanFields(const std::vector<uint8_t>& message)
 			case BroanFieldType::Void:
 				ESP_LOGD("broan","%02X%02X is not set", nOpcodeHigh, nOpcodeLow );
 				break;
+			case BroanFieldType::String:
+				ESP_LOGD("broan","%02X%02X is now %s", nOpcodeHigh, nOpcodeLow, strBuf.c_str() );
+				break;
 		}
     }
-
 }
 
 void BroanComponent::handleUnknownField(uint32_t nOpcodeHigh, uint32_t nOpcodeLow, uint8_t len, uint32_t i, const std::vector<uint8_t>& message )
@@ -600,8 +716,9 @@ void BroanComponent::runTasks()
 
 		int nCount = 0;
 		for( int i=0; i<BroanField::MAX_FIELDS && nCount < MAX_REQUEST_SIZE; i++ )
-		{
-			if( m_vecFields[i].m_unPollRate == UPDATE_RATE_NEVER || time - m_vecFields[i].m_unLastUpdate < m_vecFields[i].m_unPollRate )
+		{	
+
+			if( m_vecFields[i].m_unPollRate != UPDATE_RATE_ONCE && ( m_vecFields[i].m_unPollRate == UPDATE_RATE_NEVER || time - m_vecFields[i].m_unLastUpdate < m_vecFields[i].m_unPollRate ) )
 				continue;
 
 			nCount++;
@@ -612,6 +729,9 @@ void BroanComponent::runTasks()
 
 			vecRequest.push_back( m_vecFields[i].m_nOpcodeHigh );
 			vecRequest.push_back( m_vecFields[i].m_nOpcodeLow );
+
+			if( m_vecFields[i].m_unPollRate == UPDATE_RATE_ONCE )
+				m_vecFields[i].m_unPollRate = UPDATE_RATE_NEVER;
 		}
 
 		if( vecRequest.size() > 0 )
@@ -677,7 +797,36 @@ void BroanComponent::runTasks()
 #endif
 }
 
+std::string BroanComponent::activeModeToString( int code )
+{
+	// @todo: Figure these out
+	
+	// OFF returns code 0 / 1 (active / base)
+	// MIN returns code 1 / 9
+	// MED returns code 4 / 11
+	// MAX returns code 2 / 10
+	// INT returns code 0 / 8 (while idle)
+	// INT returns code 1 / 8 (while running)
+	// INT returns code 1 / 9 (while running)
+	// TURBO returns    3 / 8 
 
+	// Can make assumptions around active code, not quite about base mode.
+	// Probably need more data for recirc/etc to know their running modes.
+	
+	switch( code )
+	{
+		case 0: return "Idle";
+		case 1: return "Running";
+		case 2: return "Max";
+		case 3: return "Turbo";
+		case 4: return "Manual";
+	}
+	
+
+	char buf[30];
+	snprintf( buf, sizeof(buf), "%u", (unsigned)code );
+	return buf;
+}
 
 }
 }

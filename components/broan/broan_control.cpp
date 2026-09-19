@@ -8,21 +8,23 @@ void BroanComponent::setFanMode( std::string mode )
 	uint8_t value = 0x01;
 
 	if( mode == "min")
-		value = 0x09;
+		value = BroanFanMode::Min;
 	else if (mode == "max" )
-		value = 0x0a;
+		value = BroanFanMode::Max;
 	else if( mode == "manual" )
-		value = 0x0b;
+		value = BroanFanMode::Manual;
 	else if( mode == "int" )
-		value = 0x08;
+		value = BroanFanMode::Intermittent;
 	else if( mode == "turbo" )
-		value = 0x0c;
+		value = BroanFanMode::Turbo;
 	else if( mode == "humidity" )
-		value = 0x0d;
-	else if( mode == "ovr" )
-		value = 0x02;
+		value = BroanFanMode::Humidity;
+	else if( mode == "recirculate" )
+		value = BroanFanMode::Recirculate;
+	else if( mode == "smart" )
+		value = BroanFanMode::Smart;
 	else
-		value = 0x01;
+		value = BroanFanMode::Off;
 
 
 	std::vector<BroanField_t> vecFields;
@@ -93,12 +95,22 @@ void BroanComponent::setFanSpeedCFM( BroanFanMode mode, BroanCFMMode direction, 
 	writeRegisters( vecFields );
 }
 
+// Sends new filter life to ERV in three steps (to mimic wall controller)
+// 1. Write new filter life with FilterLifeStage (09:30)
+// 2. Write FilterReset=1 + filter life in (08:30)
+// 3. Write new filter life again, alone
+// Not sure why new filter life needs to be repeated three times
+// and if all this is necessary.
 void BroanComponent::resetFilter()
 {
-	std::vector<BroanField_t> vecFields;
-
 	uint32_t unNewFilterLife = FILTER_LIFE_MAX;
-	uint8_t unFilterReset = 0;
+
+	std::vector<BroanField_t> vecStage;
+	vecStage.push_back( m_vecFields[FilterLifeStage].copyForUpdate( unNewFilterLife ) );
+	writeRegisters( vecStage );
+
+	std::vector<BroanField_t> vecFields;
+	uint8_t unFilterReset = 1;
 
 	vecFields.push_back( m_vecFields[FilterLife].copyForUpdate( unNewFilterLife ) );
 	vecFields.push_back( m_vecFields[FilterReset].copyForUpdate( unFilterReset ) );
@@ -107,6 +119,11 @@ void BroanComponent::resetFilter()
 	m_vecFields[FilterLife].markDirty();
 
 	writeRegisters( vecFields );
+
+	std::vector<BroanField_t> vecConfirm;
+	vecConfirm.push_back( m_vecFields[FilterLife].copyForUpdate( unNewFilterLife ) );
+	m_vecFields[FilterLife].markDirty();
+	writeRegisters( vecConfirm );
 }
 
 void BroanComponent::setHumidityControl( bool enable ) {
